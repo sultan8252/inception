@@ -557,6 +557,7 @@ char *inception_user = NULL;
 char *inception_password = NULL;
 uint remote_backup_port = 0;
 
+char *inception_language_code = "en-US";
 bool inception_check_insert_field=0;
 bool inception_check_dml_where=0;
 bool inception_check_dml_limit=0;
@@ -570,6 +571,7 @@ ulong inception_max_primary_key_parts=0;
 ulong inception_max_update_rows=0;
 ulong inception_max_keys=0;
 bool inception_enable_not_innodb=0;
+bool inception_enable_set_engine=1;
 char* inception_support_charset=0;
 bool inception_check_table_comment=0;
 bool inception_check_column_comment=0;

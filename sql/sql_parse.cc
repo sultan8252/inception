@@ -53,6 +53,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 // reset_mqh
 #include "sql_rename.h"       // mysql_rename_table
 #include <string.h>
+#include <sstream>
 #include "sql_tablespace.h"   // mysql_alter_tablespace
 #include "hostname.h"         // hostname_cache_refresh
 #include "sql_acl.h"          // *_ACL, check_grant, is_acl_user,
@@ -113,6 +114,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 #include "sql_time.h"
 using std::max;
 using std::min;
+using std::stringstream;
 
 #define FLAGSTR(V,F) ((V)&(F)?#F" ":"")
 
@@ -546,6 +548,8 @@ mysql_statement_is_backup(
         sql_cache_node->optype == SQLCOM_DELETE ||
         sql_cache_node->optype == SQLCOM_INSERT_SELECT ||
         sql_cache_node->optype == SQLCOM_UPDATE ||
+        sql_cache_node->optype == SQLCOM_UPDATE_MULTI ||
+        sql_cache_node->optype == SQLCOM_DELETE_MULTI ||
         sql_cache_node->optype == SQLCOM_CREATE_TABLE ||
         sql_cache_node->optype == SQLCOM_DROP_TABLE ||
         sql_cache_node->optype == SQLCOM_ALTER_TABLE)
@@ -1960,6 +1964,7 @@ int mysql_get_err_level_by_errno(THD *   thd)
     case ER_VIEW_SELECT_CLAUSE:
     case ER_NOT_SUPPORTED_ITEM_TYPE:
     case ER_INCEPTION_EMPTY_QUERY:
+    case ER_TABLE_ENGINE_NOT_ALLOWED:
         return INCEPTION_PARSE;
 
     default:
@@ -2030,6 +2035,11 @@ mysql_check_inception_variables(
 
     case ER_TABLE_MUST_INNODB:
         if (inception_enable_not_innodb)
+            return false;
+        break;
+
+    case ER_TABLE_ENGINE_NOT_ALLOWED:
+        if (inception_enable_set_engine)
             return false;
         break;
 
@@ -3223,6 +3233,19 @@ int mysql_check_version_56(THD* thd)
         return false;
 
     if (mysql && strncmp(mysql->server_version, "5.6", 3) < 0)
+        return false;
+
+    return true;
+}
+
+int mysql_check_version_57(THD* thd)
+{
+    MYSQL* mysql;
+    mysql = thd->get_audit_connection();
+    if (!mysql)
+        return false;
+
+    if (mysql && strncmp(mysql->server_version, "5.7", 3) < 0)
         return false;
 
     return true;
@@ -4801,11 +4824,27 @@ int mysql_check_create_table(THD *thd)
         }
     }
 
-    if (create_info_ptr->db_type != (handlerton *)DB_TYPE_INNODB)
+    if (inception_enable_set_engine)
     {
-        my_error(ER_TABLE_MUST_INNODB, MYF(0), create_table->table_name);
-        mysql_errmsg_append(thd);
+        if(create_info_ptr->db_type != (handlerton *)DB_TYPE_INNODB)
+        {
+            my_error(ER_TABLE_MUST_INNODB, MYF(0), create_table->table_name);
+            mysql_errmsg_append(thd);
+        }
+    }else
+    {
+        if (create_info_ptr->db_type != NULL)
+        {
+            my_error(ER_TABLE_ENGINE_NOT_ALLOWED, MYF(0), create_table->table_name);
+            mysql_errmsg_append(thd);
+        }
     }
+
+//    if (create_info_ptr->db_type != (handlerton *)DB_TYPE_INNODB)
+//    {
+//        my_error(ER_TABLE_MUST_INNODB, MYF(0), create_table->table_name);
+//        mysql_errmsg_append(thd);
+//    }
 
     if (create_info_ptr->default_table_charset == NULL ||
         !mysql_check_charset(create_info_ptr->default_table_charset->csname))
@@ -5040,10 +5079,25 @@ int mysql_check_create_index(THD *thd)
             }
         }
 
-        if (keymaxlen > MAX_KEY_LENGTH)
-        {
-            my_error(ER_TOO_LONG_KEY,MYF(0),key->name.str, MAX_KEY_LENGTH); 
-            mysql_errmsg_append(thd);
+//        if (keymaxlen > MAX_KEY_LENGTH)
+//        {
+//            my_error(ER_TOO_LONG_KEY,MYF(0),key->name.str, MAX_KEY_LENGTH);
+//            mysql_errmsg_append(thd);
+//        }
+        // 5.7开始默认索引长度限制为3072bytes
+        if (mysql_check_version_57(thd)){
+            if (keymaxlen > 3072)
+                {
+                    my_error(ER_TOO_LONG_KEY,MYF(0),key->name.str, 3072);
+                    mysql_errmsg_append(thd);
+                }
+        }
+        else{
+            if (keymaxlen > MAX_KEY_LENGTH)
+            {
+                my_error(ER_TOO_LONG_KEY,MYF(0),key->name.str, MAX_KEY_LENGTH);
+                mysql_errmsg_append(thd);
+            }
         }
 
         if (!table_info->new_cache)
@@ -6043,10 +6097,26 @@ int mysql_check_alter_option(THD *thd)
     {
         if (create_info.used_fields & HA_CREATE_USED_ENGINE)
         {
-            if (create_info.db_type != (handlerton *)DB_TYPE_INNODB)
+//            if (create_info.db_type != (handlerton *)DB_TYPE_INNODB)
+//            {
+//                my_error(ER_TABLE_MUST_INNODB, MYF(0), thd->lex->query_tables->table_name);
+//                mysql_errmsg_append(thd);
+//            }
+
+            if (inception_enable_set_engine)
             {
-                my_error(ER_TABLE_MUST_INNODB, MYF(0), thd->lex->query_tables->table_name);
-                mysql_errmsg_append(thd);
+                if(create_info.db_type != (handlerton *)DB_TYPE_INNODB)
+                {
+                    my_error(ER_TABLE_MUST_INNODB, MYF(0), thd->lex->query_tables->table_name);
+                    mysql_errmsg_append(thd);
+                }
+            }else
+            {
+                if (create_info.db_type != NULL)
+                {
+                    my_error(ER_TABLE_ENGINE_NOT_ALLOWED, MYF(0), thd->lex->query_tables->table_name);
+                    mysql_errmsg_append(thd);
+                }
             }
 
             create_info.used_fields &= ~HA_CREATE_USED_ENGINE;
@@ -6472,22 +6542,44 @@ mysql_load_tables(
 
     tables = &select_lex->table_list;
 
-    for (table= tables->first; table; table= table->next_local)
-    {
-        if (table->table_name && *table->table_name == '*')
+    if (thd->lex->sql_command == SQLCOM_UPDATE_MULTI || thd->lex->sql_command == SQLCOM_DELETE_MULTI){
+        TABLE_LIST *table;
+        for (table=thd->lex->query_tables; table; table=table->next_global)
         {
-            continue;
-        }
+            if (table->table_name && *table->table_name == '*')
+            {
+                continue;
+            }
 
-        tableinfo = mysql_get_table_object(thd, table->db, table->table_name, TRUE);
-        //如果有自连接，或者在不同层次使用了同一个表，那么以上层主准
-        if (tableinfo)
+            tableinfo = mysql_get_table_object(thd, table->db, table->table_name, TRUE);
+            //如果有自连接，或者在不同层次使用了同一个表，那么以上层主准
+            if (tableinfo)
+            {
+                tablert = (table_rt_t*)my_malloc(sizeof(table_rt_t), MY_ZEROFILL);
+                tablert->table_info = tableinfo;
+                if (table->alias)
+                    strcpy(tablert->alias, table->alias);
+                LIST_ADD_LAST(link, rt->table_rt_lst, tablert);
+            }
+        }
+    }
+    else{
+        tables = &select_lex->table_list;
+        for (table= tables->first; table; table= table->next_local)
         {
-            tablert = (table_rt_t*)my_malloc(sizeof(table_rt_t), MY_ZEROFILL);
-            tablert->table_info = tableinfo;
-            if (table->alias)
-                strcpy(tablert->alias, table->alias);
-            LIST_ADD_LAST(link, rt->table_rt_lst, tablert);
+            if (strcmp(table->db ,"") == 0 && strcmp(table->table_name ,"*") == 0 )
+                    continue;
+
+            tableinfo = mysql_get_table_object(thd, table->db, table->table_name, TRUE);
+            //如果有自连接，或者在不同层次使用了同一个表，那么以上层主准
+            if (tableinfo)
+            {
+                tablert = (table_rt_t*)my_malloc(sizeof(table_rt_t), MY_ZEROFILL);
+                tablert->table_info = tableinfo;
+                if (table->alias)
+                    strcpy(tablert->alias, table->alias);
+                LIST_ADD_LAST(link, rt->table_rt_lst, tablert);
+            }
         }
     }
 
@@ -6552,6 +6644,11 @@ retry:
                         if (!strcasecmp(tableinfo->table_name, tablename) ||
                             !strcasecmp(ret_tablert->alias, tablename))
                         {
+                            return ret_tablert;
+                        }
+                        else if (thd->lex->sql_command == SQLCOM_UPDATE_MULTI ||
+                            thd->lex->sql_command == SQLCOM_DELETE_MULTI ){
+                            // 如果是update/delete多表,不再进行列校验,由explain实现.
                             return ret_tablert;
                         }
                     }
@@ -7956,7 +8053,9 @@ mysql_sql_cache_is_valid(
         sql_cache_node->optype == SQLCOM_INSERT ||
         sql_cache_node->optype == SQLCOM_DELETE ||
         sql_cache_node->optype == SQLCOM_INSERT_SELECT ||
-        sql_cache_node->optype == SQLCOM_UPDATE)
+        sql_cache_node->optype == SQLCOM_UPDATE ||
+        sql_cache_node->optype == SQLCOM_UPDATE_MULTI ||
+        sql_cache_node->optype == SQLCOM_DELETE_MULTI)
         && sql_cache_node->exe_complete)
     {
         return TRUE;
@@ -9116,6 +9215,7 @@ int mysql_get_field_string(Field* field, String* backupsql, char* null_arr, int 
     String buffer((char*) buff,sizeof(buff),&my_charset_bin);
     String buffer2((char*) buff,sizeof(buff),&my_charset_bin);
     char* dupcharfield;
+    std::stringstream ss;
 
     // backupsql->append(separated);
 
@@ -9194,13 +9294,27 @@ int mysql_get_field_string(Field* field, String* backupsql, char* null_arr, int 
             {
                 //    float nr;
                 //    nr= (float) field->val_real();
-                res=field->val_str(&buffer);
+                //    res=field->val_str(&buffer);
+                float nr= field->val_real();
+                ss.clear(); // 清空
+                ss<<nr;
+
+                backupsql->append(ss.str().c_str());
+                append_flag = FALSE;
+                ss.str("");
                 break;
             }
         case MYSQL_TYPE_DOUBLE:
             {
-                res=field->val_str(&buffer);
+                //    res=field->val_str(&buffer);
                 //    double nr= field->val_real();
+                double nr= field->val_real();
+                ss.clear(); // 清空
+                ss<<nr;
+
+                backupsql->append(ss.str().c_str());
+                append_flag = FALSE;
+                ss.str("");
                 break;
             }
         case MYSQL_TYPE_DATETIME:
@@ -9301,9 +9415,11 @@ int mysql_execute_backup_info_insert_sql(
         backup_sql->append("\'INSERT\'");
         break;
     case SQLCOM_DELETE:
+    case SQLCOM_DELETE_MULTI:
         backup_sql->append("\'DELETE\'");
         break;
     case SQLCOM_UPDATE:
+    case SQLCOM_UPDATE_MULTI:
         backup_sql->append("\'UPDATE\'");
         break;
     case SQLCOM_CREATE_DB:
@@ -10188,6 +10304,38 @@ int mysql_modify_binlog_format_row(MYSQL *mysql)
     DBUG_ENTER("mysql_modify_binlog_format_row");
 
     sprintf(set_format, "set binlog_format=row;");
+    if (mysql_real_query(mysql, set_format, strlen(set_format)))
+    {
+        my_message(mysql_errno(mysql), mysql_error(mysql), MYF(0));
+        DBUG_RETURN(true);
+    }
+
+    DBUG_RETURN(false);
+}
+
+int mysql_close_sql_safe_updates(MYSQL* mysql)
+{
+    char set_format[32];
+
+    DBUG_ENTER("mysql_close_sql_safe_updates");
+
+    sprintf(set_format, "set session sql_safe_updates=0;");
+    if (mysql_real_query(mysql, set_format, strlen(set_format)))
+    {
+        my_message(mysql_errno(mysql), mysql_error(mysql), MYF(0));
+        DBUG_RETURN(ER_NO);
+    }
+
+    DBUG_RETURN(false);
+}
+
+int mysql_set_wait_timeout(MYSQL *mysql)
+{
+    char set_format[32];
+
+    DBUG_ENTER("mysql_modify_sql_safe_update");
+
+    sprintf(set_format,"set session wait_timeout=28800;");
     if (mysql_real_query(mysql, set_format, strlen(set_format)))
     {
         my_message(mysql_errno(mysql), mysql_error(mysql), MYF(0));
@@ -11190,6 +11338,8 @@ int mysql_get_remote_variables(THD* thd)
     }
 
     mysql_free_result(source_res);
+    if (mysql_close_sql_safe_updates(mysql) == ER_NO)
+        DBUG_RETURN(ER_NO);
     DBUG_RETURN(false);
 }
 
@@ -11227,6 +11377,12 @@ int mysql_check_binlog_format(THD* thd, char* binlogformat)
     }
 
     mysql_free_result(source_res);
+    sprintf(set_format,"set session wait_timeout=28800;");
+    if (mysql_real_query(mysql, set_format, strlen(set_format)))
+    {
+        my_message(mysql_errno(mysql), mysql_error(mysql), MYF(0));
+        DBUG_RETURN(ER_NO);
+    }
     DBUG_RETURN(false);
 }
 
