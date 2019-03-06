@@ -12,6 +12,7 @@ https://inception-document.readthedocs.io/zh_CN/latest/
 https://hub.docker.com/r/hhyo/inception
 
 ##压缩表支持
+####备份表默认使用innodb压缩表,需要开启相关数据库配置
 在备份数据库服务器配置文件中添加开启压缩表支持
 ```
 innodb_file_format = Barracuda
