@@ -11,6 +11,19 @@ https://inception-document.readthedocs.io/zh_CN/latest/
 
 https://hub.docker.com/r/hhyo/inception
 
+##压缩表支持
+在备份数据库服务器配置文件中添加开启压缩表支持
+```
+innodb_file_format = Barracuda
+innodb_file_format_max = Barracuda
+```
+在线修改数据库配置
+```
+set global innodb_file_format="Barracuda"; 
+set global innodb_file_format_max="Barracuda";
+```
+
+
 #### 配置文件准备，参考配置（inc.cnf）
 ```
 [inception]
